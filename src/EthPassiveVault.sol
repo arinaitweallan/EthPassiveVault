@@ -9,7 +9,7 @@ import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.so
 import {SafeERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
-/// @author Top G
+/// @author Arinaitwe Allan
 /// @notice EthPassiveVault: User deposits ETH, withdraws 1% of the balance worth at the time of deposit every month
 /// @dev Protected to only owner
 
