@@ -8,6 +8,8 @@ import {IAaveOracle} from "src/interfaces/IAaveOracle.sol";
 import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
+import {Escrow} from "src/Escrow.sol";
+import {IEscrow} from "src/interfaces/IEscrow.sol";
 
 /// @author Arinaitwe Allan
 /// @notice EthPassiveVault: User deposits ETH, withdraws 1% of the balance worth at the time of deposit every month
@@ -40,7 +42,9 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
                               AAVE ORACLE
     //////////////////////////////////////////////////////////////*/
     // Aave V3 @audit: need to be verified
-    IAaveOracle immutable AAVE_ORACLE = 0xD63f7658C66B2934Bd234D79D06aEF5290734B30;
+    IAaveOracle immutable aaveOracle; // 0xD63f7658C66B2934Bd234D79D06aEF5290734B30
+
+    IEscrow public escrow;
 
     /*//////////////////////////////////////////////////////////////
                            STORAGE VARIABLES
@@ -69,17 +73,34 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
     constructor(address _aaveOracle) ERC20("ETH Vault Shares", "EVS") Ownable(_msgSender()) {
+        aaveOracle = IAaveOracle(_aaveOracle);
         withdrawTimer = block.timestamp;
         emergencyTimer = block.timestamp;
         emergencyDelay = MIN_EMERGENCY_DELAY;
+
+        // deploy escrow contract with vault and token as address(this)
+        escrow = IEscrow(address(new Escrow(address(this), address(this))));
     }
 
     /*//////////////////////////////////////////////////////////////
                                  PUBLIC
     //////////////////////////////////////////////////////////////*/
-    /// @dev overrie ownable to revert renouncing ownership
+    /// @dev overrie ownable2step to revert renouncing ownership
     function renounceOwnership() public pure override {
         revert CantRenounceContract();
+    }
+
+    /// @dev override ownable2step to transfer shares to escrow contract
+    function transferOwnership(address newOwner) public virtual override onlyOwner {
+        _transferSharesToEscrow();
+        super.transferOwnership(newOwner);
+    }
+
+    /// @dev override ownable2step to transfer shares from escrow contract to new owner
+    function acceptOwnership() public virtual override {
+        super.acceptOwnership();
+        // after accepting ownership
+        _transferSharesFromEscrowToNewOwner();
     }
 
     // get oracle price to fecth the price of eth
@@ -89,7 +110,7 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
     /// @dev function to fetch eth price from aave oracle
     function getEthPrice() public view returns (uint256 price) {
         // q will address(0) fetch the price of eth
-        price = AAVE_ORACLE.getAssetPrice(address(0));
+        price = aaveOracle.getAssetPrice(address(0));
         if (price == 0) revert OracleError();
     }
 
@@ -100,8 +121,8 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
     /// @notice mints shares equal to amount deposited
     /// @param amount ether amount to deposit
     function deposit(uint256 amount) external payable nonReentrant {
-        require(amount == msg.value, EtherMismatch());
         require(amount != 0, InvalidAmount());
+        require(amount == msg.value, EtherMismatch());
         require(amount >= MIN_DEPOSIT, InvalidAmount());
 
         _calculateMonthlyPayOut(amount);
@@ -127,6 +148,13 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
         _processWithdraw();
     }
 
+    // q on transferring ownership, should we transfer the shares as well?
+    // override acceptOwnership
+
+    // transferOwnership -> pending owner, OZ function cant transfer ownership to address(0)
+    // acceptOwnership -> new owner
+    // transfer shares balance to escrow, on accepting ownership, transfer shares to new owner
+
     /// @dev function to withdraw ether for the delays in the claims
     /// @notice this is because the monthly claims are not automatic
     /// @notice when there is more than one month in claim, the user
@@ -144,7 +172,7 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
     /// @param to address to transfer token to
     /// @param amount amount to transfer
     function sweepErcToken(address token, address to, uint256 amount) external nonReentrant onlyOwner {
-        require(token != address(0) || to != address(0), ZeroAddress());
+        require(token != address(0), ZeroAddress());
         require(amount != 0, InvalidAmount());
 
         uint256 balance = IERC20(token).balanceOf(address(this));
@@ -169,6 +197,24 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
 
         uint256 toTake = _balance - _deployed;
         _transferEther(toTake);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                PRIVATE
+    //////////////////////////////////////////////////////////////*/
+    // internal helpers for transfering shares when transfering ownership
+    function _transferSharesToEscrow() private {
+        address _owner = owner();
+        uint256 _shares = IERC20(address(this)).balanceOf(_owner);
+        // transfer the share balance of owner to escrow contract
+        _transfer(_owner, address(escrow), _shares);
+    }
+
+    function _transferSharesFromEscrowToNewOwner() private {
+        address _from = address(escrow);
+        address _to = owner();
+        uint256 _shares = IERC20(address(this)).balanceOf(_from);
+        escrow.transferShares(_to, _shares);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -255,7 +301,9 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
         require(allowed, NotAvailable());
 
         uint256 _balance = _contractBalance();
-        uint256 _available = _balance * EMERGENCY_CUT / SCALE;
+        require(_balance > 0, NotAvailable());
+
+        uint256 _available = _balance * EMERGENCY_CUT / SCALE; // min = 0.03 * 1e18 * 2_000 / 10_000 = 6000000000000000
 
         // cap amount to available
         if (amount > _available) {
