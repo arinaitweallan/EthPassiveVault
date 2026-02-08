@@ -12,7 +12,7 @@ import {Escrow} from "src/Escrow.sol";
 import {IEscrow} from "src/interfaces/IEscrow.sol";
 
 /// @author Arinaitwe Allan
-/// @notice EthPassiveVault: User deposits ETH, withdraws 1% of the balance worth at the time of deposit every month
+/// @notice EthPassiveVault: User deposits ETH, withdraws 2% of the balance worth at the time of deposit every month
 /// @dev Protected to only owner
 
 contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
