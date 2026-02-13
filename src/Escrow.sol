@@ -9,7 +9,8 @@ contract Escrow is IEscrow {
     address public vault;
 
     constructor(address _vault, address _token) {
-        require(_vault != address(0) || _token != address(0), ZeroAddress());
+        // this reverts if either is address(0)
+        require(_vault != address(0) && _token != address(0), ZeroAddress());
         vault = _vault;
         token = IERC20(_token);
     }

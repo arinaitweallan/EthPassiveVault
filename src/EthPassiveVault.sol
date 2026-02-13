@@ -41,9 +41,7 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
     /*//////////////////////////////////////////////////////////////
                               AAVE ORACLE
     //////////////////////////////////////////////////////////////*/
-    // Aave V3 @audit: need to be verified
-    IAaveOracle immutable aaveOracle; // 0xD63f7658C66B2934Bd234D79D06aEF5290734B30
-
+    IAaveOracle public aaveOracle; // 0x54586bE62E3c3580375aE3723C145253060Ca0C2
     IEscrow public escrow;
 
     /*//////////////////////////////////////////////////////////////
@@ -68,6 +66,7 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
     uint256 internal constant MIN_DEPOSIT = 0.03 ether; // $90 at $3000 ETH price
     uint256 internal constant EMERGENCY_CUT = 2_000; // 20%
     uint256 internal constant MIN_EMERGENCY_DELAY = 14 days;
+    address internal constant WETH_MAINNET = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -103,14 +102,10 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
         _transferSharesFromEscrowToNewOwner();
     }
 
-    // get oracle price to fecth the price of eth
-    // returned in a scale of 8 decimals
-    // @test: need to test in forked environment
-
     /// @dev function to fetch eth price from aave oracle
+    /// @notice returned in a scale of 8 decimals
     function getEthPrice() public view returns (uint256 price) {
-        // q will address(0) fetch the price of eth
-        price = aaveOracle.getAssetPrice(address(0));
+        price = aaveOracle.getAssetPrice(WETH_MAINNET);
         if (price == 0) revert OracleError();
     }
 
@@ -229,6 +224,8 @@ contract EthPassiveVault is ERC20, Ownable2Step, ReentrancyGuard {
         // this is below the aave oracle scale but the multiplication
         // before division in calculating `amountToPay` which restores
         uint256 payout = amount * aavePrice * PAY_FACTOR / SCALE / WAD;
+        // (3 * 1e16) * 1e8 * 200 / 1e4 / 1e18 = 60000, minimum payout we
+        // get when user deposits min amount at eth price of $1
 
         monthlyPayInUsdE8 += payout;
     }
