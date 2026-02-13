@@ -11,20 +11,20 @@ import {Escrow} from "src/Escrow.sol";
 import {MockToken} from "test/mocks/MockToken.sol";
 
 contract VaultTest is Test {
-    EthPassiveVault vault;
-    AaveOracleMock oracle;
-    MockToken token;
+    EthPassiveVault public vault;
+    AaveOracleMock public oracle;
+    MockToken public token;
 
-    address _owner = address(0x7fff);
-    address lisa = address(0x123);
-    address gina = address(0x124);
+    address public _owner = address(0x7fff);
+    address public lisa = address(0x123);
+    address public gina = address(0x124);
 
     uint256 year = 365 days;
 
     // events
     event Deposit(address indexed account, uint256 indexed amount);
 
-    function setUp() external {
+    function setUp() external virtual {
         // warp the timestamp almost to the current time
         vm.warp(block.timestamp + (year * 56));
 
@@ -64,6 +64,45 @@ contract VaultTest is Test {
         vm.prank(caller);
         vm.expectRevert(EthPassiveVault.CantRenounceContract.selector);
         vault.renounceOwnership();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                 ESCROW
+    //////////////////////////////////////////////////////////////*/
+    function testZeroAddressConstructorParamsRevert() public {
+        vm.expectRevert(IEscrow.ZeroAddress.selector);
+        Escrow escrow = new Escrow(address(0), address(1));
+
+        vm.expectRevert(IEscrow.ZeroAddress.selector);
+        Escrow _escrow = new Escrow(address(1), address(0));
+
+        // assert not deployed
+        console2.log("Escrow: ", (address(Escrow(address(escrow)))));
+        console2.log("Escrow: ", (address(Escrow(address(_escrow)))));
+    }
+
+    function testEscrowNonVaultCallerReverts(address user) public {
+        _notZeroAddress(user);
+
+        IEscrow escrow = vault.escrow();
+
+        vm.prank(user);
+        vm.expectRevert(IEscrow.NotAuthorized.selector);
+        escrow.transferShares(user, 0);
+    }
+
+    function testTransferFailedEscrow(address to) public {
+        _notZeroAddress(to);
+        uint256 amount = 1e18;
+
+        IEscrow escrow = vault.escrow();
+
+        // mock the transfer function to return false
+        vm.mockCall(address(vault), abi.encodeWithSelector(IERC20.transfer.selector, to, amount), abi.encode(false));
+
+        vm.prank(address(vault));
+        vm.expectRevert(IEscrow.Failed.selector);
+        escrow.transferShares(to, amount);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -214,6 +253,53 @@ contract VaultTest is Test {
         vault.deposit{value: amount}(amount);
     }
 
+    function testPriceGoesUpAndUserDepositToUpdateMonthlyPayout(address user) public {
+        // user deposits, price is $2000
+        uint256 amount = 10 ether;
+        _deposit(user, amount);
+        // 0.02 * 20_000 = 400
+
+        // check monthly payout
+        uint256 _payout = vault.monthlyPayInUsdE8();
+        console2.log("Monthly payout: ", _payout);
+
+        // price increase by 2x and user deposits
+        oracle.setPrice(4000);
+        _deposit(user, amount);
+        // 0.02 * 40_000 = 800
+
+        // check monthly payout again
+        uint256 payout_ = vault.monthlyPayInUsdE8();
+        console2.log("Monthly payout now: ", payout_);
+
+        // assert
+        assertEq(payout_, ((400 + 800) * 1e8));
+    }
+
+    function testPriceFalls90PercentAfterDeposit(address user) public {
+        // user deposits, $2000
+        uint256 amount = 10 ether;
+        _deposit(user, amount);
+
+        // 31 days pass and price stays the same
+        vm.warp(block.timestamp + 31 days);
+
+        // owner withdraws
+        vm.prank(_owner);
+        vault.withdraw(); // 2e18
+
+        // user deposits, $2000
+        _deposit(user, amount);
+
+        // 31 days pass and price falls 90%
+        vm.warp(block.timestamp + 31 days);
+        oracle.setPrice(200); // $200
+
+        // owner withdraws
+        vm.prank(_owner);
+        vault.withdraw(); // 2e18
+    }
+
     /*//////////////////////////////////////////////////////////////
                            TRANSFER OWNERSHIP
     //////////////////////////////////////////////////////////////*/
@@ -274,6 +360,24 @@ contract VaultTest is Test {
         _escrow.transferShares(address(0xFF), 1e18);
     }
 
+    function testTwiceTransferBeforeOwnerAcceptsOwnership(address user) public {
+        // user deposits
+        uint256 amount = 1 ether;
+        _deposit(user, amount);
+
+        // transfer ownership to new owner
+        address owner_ = address(0x5c);
+        address nextOwner = address(0x5d);
+
+        vm.prank(_owner);
+        vault.transferOwnership(owner_);
+
+        // before pending owner accepts ownership, transfer ownership
+        // to another account
+        vm.prank(_owner);
+        vault.transferOwnership(nextOwner);
+    }
+
     /*//////////////////////////////////////////////////////////////
                                 WITHDRAW
     //////////////////////////////////////////////////////////////*/
@@ -285,6 +389,21 @@ contract VaultTest is Test {
         // non owner tries withdraw
         vm.prank(user);
         vm.expectRevert(); // error from `Ownable`
+        vault.withdraw();
+    }
+
+    function testWithdrawTransferFailed(address user) public {
+        uint256 amount = 100 ether;
+        _deposit(user, amount);
+
+        vm.warp(block.timestamp + 31 days);
+
+        // use a simple 'revert' bytecode: 60006000fd
+        vm.etch(_owner, hex"60006000fd");
+
+        // withdraw before 30 days
+        vm.prank(_owner);
+        vm.expectRevert(EthPassiveVault.TransferFailed.selector);
         vault.withdraw();
     }
 
@@ -638,7 +757,7 @@ contract VaultTest is Test {
                                  ORACLE
     //////////////////////////////////////////////////////////////*/
     function testGetEthPrice() public view {
-        uint price = vault.getEthPrice();
+        uint256 price = vault.getEthPrice();
         assertGe(price, 0);
     }
 
